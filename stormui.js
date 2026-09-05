@@ -1061,7 +1061,7 @@ function renderToolsTab(container) {
 //  6.  LÓGICA Y CONEXIÓN CON EL MOTOR
 // ---------------------------------------------------------------------------
 
-function selectPreset(preset) {
+function selectPreset(preset, autoLoadSave = true) {
   UI.selectedPreset = preset;
   UI.sliderValues = {}; // Limpia valores al cambiar preset
 
@@ -1073,40 +1073,13 @@ function selectPreset(preset) {
   // Re-renderiza la tab actual
   switchTab(UI.activeTab);
 
-  // Carga archivo si existe
-  if (preset.saveFile && typeof loadSaveFile === 'function') {
+  // Carga archivo solo si el motor ya está listo y no en la inicialización pasiva
+  if (autoLoadSave && preset.saveFile && typeof loadSaveFile === 'function') {
     loadSaveFile(preset.saveFile);
   }
 
   applyCurrentSettings();
 }
-
-function applyCurrentSettings() {
-  if (!UI.selectedPreset || typeof guiControls === 'undefined') return;
-
-  const newControls = applyPresetToGuiControls(UI.selectedPreset, UI.sliderValues);
-  Object.assign(guiControls, newControls);
-}
-
-function switchTab(tabId) {
-  UI.activeTab = tabId;
-  
-  document.querySelectorAll('.sui-tab').forEach(t => {
-    t.classList.toggle('active', t.dataset.tab === tabId);
-  });
-
-  const scrollArea = document.querySelector('.sui-scroll');
-  if (!scrollArea) return;
-
-  if (tabId === 'presets') renderPresetsTab(scrollArea);
-  else if (tabId === 'basic') renderBasicTab(scrollArea);
-  else if (tabId === 'advanced') renderAdvancedTab(scrollArea);
-  else if (tabId === 'tools') renderToolsTab(scrollArea);
-}
-
-// ---------------------------------------------------------------------------
-//  7.  INICIALIZACIÓN
-// ---------------------------------------------------------------------------
 
 function suiInit() {
   injectStyles();
@@ -1170,8 +1143,8 @@ function suiInit() {
     }
   };
 
-  // Seleccionar el primer preset por defecto
-  selectPreset(STORM_PRESETS[0]);
+  // Seleccionar el primer preset SIN forzar la carga de archivos al arrancar el script
+  selectPreset(STORM_PRESETS[0], false);
 }
 
 // Auto-inicialización al cargar el DOM
