@@ -2449,25 +2449,39 @@ window.suiLaunchSimulation = async function() {
   const gcOverrides = applyPresetToGuiControls(preset, UI.sliderValues);
   window._stormUIOverrides = gcOverrides;
 
-  // Update resolution inputs so loadData() picks them up
+  // Read resolution values from the launcher's own inputs
   const resX   = document.getElementById('launcher-resX');
   const resY   = document.getElementById('launcher-resY');
   const height = document.getElementById('launcher-height');
 
-  // These IDs must match the original index.html inputs
-  const simResX   = document.getElementById('simResSelX');
-  const simResY   = document.getElementById('simResSelY');
-  const simHeight = document.getElementById('simHeightSel');
-  if (simResX && resX)   simResX.value   = resX.value;
-  if (simResY && resY)   simResY.value   = resY.value;
-  if (simHeight && height) simHeight.value = height.value;
+  const resXval   = parseInt(resX?.value   ?? 200);
+  const resYval   = parseInt(resY?.value   ?? 300);
+  const heightVal = parseInt(height?.value ?? 12000);
 
   if (preset.saveFile) {
-    // Load save file programmatically
+    // For save-file presets, also try to update the original elements if they still
+    // exist in the DOM (loadData()'s file-loading branch doesn't use them, but keep
+    // for safety).
+    const simResX   = document.getElementById('simResSelX');
+    const simResY   = document.getElementById('simResSelY');
+    const simHeight = document.getElementById('simHeightSel');
+    if (simResX)   simResX.value   = resXval;
+    if (simResY)   simResY.value   = resYval;
+    if (simHeight) simHeight.value = heightVal;
     await suiLoadSaveFile(preset.saveFile);
   } else {
-    // New simulation
-    loadData();
+    // ── NUEVA SIMULACIÓN ────────────────────────────────────────────────────
+    // NO llamamos a loadData() porque esa función intenta leer los elementos
+    // simResSelX / simResSelY / simHeightSel del DOM original, que stormui ya
+    // eliminó al reemplazar el innerHTML de IntroScreen.
+    // En su lugar reproducimos exactamente lo que haría la rama sin-archivo de
+    // loadData(), asignando las variables globales directamente.
+    window.sim_res_x = resXval;
+    window.sim_res_y = resYval;
+    window.sim_height = heightVal;
+    window.NUM_DROPLETS = (resXval * resYval) / 25; // NUM_DROPLETS_DEVIDER = 25
+    window.SETUP_MODE = true;
+    mainScript(null); // lanza la simulación sin texturas iniciales
   }
 };
 
@@ -2488,12 +2502,23 @@ async function suiLoadSaveFile(url) {
     const fileInput = document.getElementById('fileInput');
     fileInput.files = dt.files;
 
+    // loadData() con archivo: lee la resolución del propio archivo, no del DOM.
     loadData();
   } catch (err) {
     console.error('stormui: error cargando save file', err);
-    // Fallback: new simulation with overrides
-    if (btn) { btn.disabled = false; btn.textContent = `▶  Lanzar sin archivo guardado`; }
-    loadData();
+    // Fallback: nueva simulación con los valores del launcher.
+    // NO llamamos a loadData() sin archivo porque leeería elementos del DOM
+    // originales (simResSelX, etc.) que stormui eliminó.
+    if (btn) { btn.disabled = false; btn.textContent = '▶  Lanzar sin archivo guardado'; }
+    const resX   = document.getElementById('launcher-resX');
+    const resY   = document.getElementById('launcher-resY');
+    const height = document.getElementById('launcher-height');
+    window.sim_res_x  = parseInt(resX?.value   ?? 200);
+    window.sim_res_y  = parseInt(resY?.value   ?? 300);
+    window.sim_height = parseInt(height?.value ?? 12000);
+    window.NUM_DROPLETS = (window.sim_res_x * window.sim_res_y) / 25;
+    window.SETUP_MODE = true;
+    mainScript(null);
   }
 }
 
