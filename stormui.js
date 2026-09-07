@@ -575,8 +575,163 @@ const STORM_PRESETS = [
 ];
 
 // ---------------------------------------------------------------------------
-//  2.  UTILIDADES
+//  2b. SOUNDINGS SINTÉTICOS POR PRESET
+//
+//  Formato idéntico al de rawSoundingToSimSounding en app.js:
+//    { alt (m), t (°C), td (°C), vel (km/h), angle (°) }
+//  Ordenado de MAYOR altitud a MENOR (índice 0 = tropopausa, último = suelo).
+//  Mínimo 11 entradas (app.js comprueba soundingData.length > 10).
+//
+//  angle=0 → componente horizontal positiva (viento "de izquierda a derecha")
+//  angle=180 → componente horizontal negativa
 // ---------------------------------------------------------------------------
+
+const PRESET_SOUNDINGS = {
+
+  // ── TORMENTA CONVECTIVA ──────────────────────────────────────────────────
+  // Día de verano cálido: 30 °C en superficie, fuerte CAPE, cizalladura moderada
+  thunderstorm: {
+    lat: 45.0, month: 6.5,
+    data: [
+      {alt:12000, t:-58, td:-68, vel:35, angle:0},
+      {alt:10000, t:-42, td:-52, vel:55, angle:0},
+      {alt: 8000, t:-25, td:-38, vel:60, angle:0},
+      {alt: 7000, t:-18, td:-32, vel:58, angle:0},
+      {alt: 6000, t:-10, td:-24, vel:52, angle:0},
+      {alt: 5000, t: -3, td:-17, vel:43, angle:0},
+      {alt: 4000, t:  5, td: -6, vel:33, angle:0},
+      {alt: 3000, t: 11, td:  2, vel:22, angle:0},
+      {alt: 2000, t: 17, td: 10, vel:14, angle:0},
+      {alt: 1000, t: 23, td: 17, vel: 8, angle:0},
+      {alt:  500, t: 26, td: 21, vel: 5, angle:0},
+      {alt:    0, t: 30, td: 23, vel: 2, angle:0},
+    ],
+  },
+
+  // ── GRANIZO INTENSO ──────────────────────────────────────────────────────
+  // Extremadamente inestable: 32 °C, CAPE muy alto, capa seca en altura,
+  // cizalladura fuerte → favorece granizo grande
+  hail: {
+    lat: 46.0, month: 6.5,
+    data: [
+      {alt:12000, t:-60, td:-70, vel:80, angle:0},
+      {alt:10000, t:-44, td:-54, vel:75, angle:0},
+      {alt: 8000, t:-27, td:-45, vel:68, angle:0},
+      {alt: 6000, t:-11, td:-40, vel:58, angle:0},  // capa seca en altitud media
+      {alt: 5000, t: -3, td:-35, vel:48, angle:0},  // capa seca
+      {alt: 4000, t:  5, td:-10, vel:38, angle:0},
+      {alt: 3000, t: 12, td:  3, vel:28, angle:0},
+      {alt: 2000, t: 18, td: 12, vel:18, angle:0},
+      {alt: 1000, t: 25, td: 19, vel:10, angle:0},
+      {alt:  500, t: 28, td: 23, vel: 6, angle:0},
+      {alt:  200, t: 30, td: 25, vel: 3, angle:0},
+      {alt:    0, t: 32, td: 26, vel: 2, angle:0},
+    ],
+  },
+
+  // ── NIEBLA DENSA ────────────────────────────────────────────────────────
+  // Otoño, niebla de radiación: superficie fría y saturada,
+  // inversión térmica a ~500 m, sin viento
+  fog: {
+    lat: 48.0, month: 10.0,
+    data: [
+      {alt:12000, t:-55, td:-65, vel: 8, angle:0},
+      {alt: 8000, t:-30, td:-45, vel: 6, angle:0},
+      {alt: 5000, t:-12, td:-25, vel: 5, angle:0},
+      {alt: 3000, t:  2, td:-12, vel: 4, angle:0},
+      {alt: 2000, t:  8, td: -5, vel: 3, angle:0},
+      {alt: 1000, t: 12, td:  3, vel: 2, angle:0},
+      {alt:  700, t: 14, td:  4, vel: 1, angle:0},  // techo de la inversión
+      {alt:  500, t: 13, td:  6, vel: 1, angle:0},  // inversión: más cálido que abajo
+      {alt:  300, t: 11, td:  9, vel: 1, angle:0},
+      {alt:  150, t: 10, td: 10, vel: 0, angle:0},  // saturado
+      {alt:   50, t:  9, td:  9, vel: 0, angle:0},  // saturado
+      {alt:    0, t:  8, td:  8, vel: 0, angle:0},  // saturado en superficie
+    ],
+  },
+
+  // ── NEVADA INTENSA ───────────────────────────────────────────────────────
+  // Invierno frío: temperatura bajo cero, humedad suficiente para nieve
+  snowstorm: {
+    lat: 52.0, month: 1.5,
+    data: [
+      {alt:12000, t:-60, td:-70, vel:30, angle:0},
+      {alt: 8000, t:-35, td:-50, vel:40, angle:0},
+      {alt: 5000, t:-20, td:-32, vel:45, angle:0},
+      {alt: 3000, t:-10, td:-20, vel:35, angle:0},
+      {alt: 2000, t: -5, td:-13, vel:28, angle:0},
+      {alt: 1500, t: -2, td: -8, vel:22, angle:0},
+      {alt: 1000, t: -1, td: -5, vel:17, angle:0},
+      {alt:  700, t: -1, td: -3, vel:13, angle:0},
+      {alt:  400, t: -2, td: -3, vel: 9, angle:0},
+      {alt:  200, t: -2, td: -3, vel: 6, angle:0},
+      {alt:   50, t: -3, td: -4, vel: 4, angle:0},
+      {alt:    0, t: -3, td: -4, vel: 3, angle:0},
+    ],
+  },
+
+  // ── LÍNEA DE TURBONADA (DERECHO) ─────────────────────────────────────────
+  // Calor extremo + cizalladura brutal → derecho organizado, rachas destructivas
+  squall: {
+    lat: 45.0, month: 6.5,
+    data: [
+      {alt:12000, t:-58, td:-68, vel:90, angle:0},
+      {alt:10000, t:-42, td:-52, vel:85, angle:0},
+      {alt: 8000, t:-26, td:-40, vel:78, angle:0},
+      {alt: 6000, t:-11, td:-28, vel:68, angle:0},
+      {alt: 5000, t: -3, td:-35, vel:58, angle:0},  // capa seca
+      {alt: 4000, t:  5, td:-15, vel:46, angle:0},
+      {alt: 3000, t: 12, td:  4, vel:33, angle:0},
+      {alt: 2000, t: 19, td: 13, vel:20, angle:0},
+      {alt: 1000, t: 25, td: 20, vel:10, angle:0},
+      {alt:  500, t: 28, td: 24, vel: 6, angle:0},
+      {alt:  200, t: 30, td: 26, vel: 3, angle:0},
+      {alt:    0, t: 32, td: 27, vel: 2, angle:0},
+    ],
+  },
+
+  // ── TORMENTA MULTICÉLULA ─────────────────────────────────────────────────
+  // Tarde de primavera: moderadamente inestable, organización multicélula
+  multicell: {
+    lat: 48.0, month: 5.5,
+    data: [
+      {alt:12000, t:-56, td:-66, vel:40, angle:0},
+      {alt:10000, t:-40, td:-50, vel:55, angle:0},
+      {alt: 8000, t:-24, td:-36, vel:52, angle:0},
+      {alt: 6000, t:-10, td:-22, vel:44, angle:0},
+      {alt: 5000, t: -3, td:-15, vel:36, angle:0},
+      {alt: 4000, t:  4, td: -5, vel:28, angle:0},
+      {alt: 3000, t: 10, td:  3, vel:20, angle:0},
+      {alt: 2000, t: 16, td:  9, vel:13, angle:0},
+      {alt: 1000, t: 21, td: 15, vel: 8, angle:0},
+      {alt:  500, t: 24, td: 18, vel: 5, angle:0},
+      {alt:  200, t: 26, td: 20, vel: 3, angle:0},
+      {alt:    0, t: 28, td: 21, vel: 2, angle:0},
+    ],
+  },
+};
+
+// Aplica el sounding sintético del preset e impide que prepareSounding lo sobreescriba
+function _suiInjectSounding(presetId) {
+  const ps = PRESET_SOUNDINGS[presetId];
+  if (!ps) return;
+
+  window.soundingData = ps.data;
+  window.startLatitude = ps.lat;
+  window.startDate = new Date('2025-07-01'); // fecha genérica de verano/otoño
+
+  // Añadir lat/month a _stormUIOverrides para que el sol sea correcto
+  if (window._stormUIOverrides) {
+    window._stormUIOverrides.latitude = ps.lat;
+    window._stormUIOverrides.month    = ps.month;
+  }
+
+  // Bloquear temporalmente prepareSounding para que no sobreescriba nuestro sounding
+  // (puede estar pendiente de una llamada async del DOMContentLoaded original)
+  const _orig = window.prepareSounding;
+  window.prepareSounding = () => Promise.resolve();
+  setTimeout(() => { window.prepareSounding = _orig; }, 10000); // restaurar a los 10 s
+}
 
 function lerp(a, b, t) {
   return a + (b - a) * Math.clamp01(t);
@@ -1237,6 +1392,10 @@ window.suiLaunchSimulation = async function() {
 
   // Instalar control RAF antes de que arranque el loop
   _suiInstallSpeedControl();
+
+  // Inyectar sounding sintético: establece la atmósfera inicial correcta para el preset
+  // y bloquea prepareSounding para que no lo sobreescriba con datos de red incorrectos.
+  _suiInjectSounding(preset.id);
 
   // Pre-parchear guiControls_default para que setupDatGui arranque con valores del preset.
   // Es la primera línea de defensa; el poller post-inicio es la segunda.
