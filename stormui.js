@@ -638,9 +638,9 @@ function injectStyles() {
     #sui-root *, #sui-panel * { box-sizing: border-box; }
 
     #sui-root {
-      --sui-bg:        rgba(15, 15, 20, 0.92);
-      --sui-bg2:       rgba(30, 30, 40, 0.85);
-      --sui-bg3:       rgba(45, 45, 60, 0.80);
+      --sui-bg:        rgba(12, 12, 18, 0.62);
+      --sui-bg2:       rgba(25, 25, 35, 0.55);
+      --sui-bg3:       rgba(40, 40, 55, 0.50);
       --sui-border:    rgba(255,255,255,0.10);
       --sui-border2:   rgba(255,255,255,0.20);
       --sui-text:      #f0f0f0;
@@ -1096,14 +1096,28 @@ function renderToolsTab() {
   </div>`;
 
   // ── Velocidad ──
-  const speeds = [{mult:0.25,label:'¼×'},{mult:0.5,label:'½×'},{mult:1,label:'1×'},{mult:2,label:'2×'},{mult:4,label:'4×'}];
+  const speedSteps = [0.25, 0.5, 1, 2, 4];
+  const speedLabels = ['¼×','½×','1×','2×','4×'];
+  const curIdx = speedSteps.indexOf(UI.simSpeed) !== -1 ? speedSteps.indexOf(UI.simSpeed) : 2;
   html += `
   <div class="sui-section-label">Velocidad <span style="font-size:9px;color:var(--sui-text2)">( teclas 1 – 5 )</span></div>
-  <div class="sui-speed-grid">`;
-  for (const s of speeds) {
-    const active = UI.simSpeed === s.mult;
-    html += `<button class="sui-btn sui-speed-btn ${active ? 'sui-btn-accent' : 'sui-btn-secondary'}" data-speed="${s.mult}"
-      onclick="suiSetSpeed(${s.mult})">${s.label}</button>`;
+  <div class="sui-slider-row" style="margin-bottom:4px">
+    <div class="sui-slider-header">
+      <span class="sui-slider-label">Velocidad de simulación</span>
+      <span class="sui-slider-val" id="sui-speed-val">${speedLabels[curIdx]}</span>
+    </div>
+    <input type="range" class="sui-slider" id="sui-speed-range"
+      min="0" max="4" step="1" value="${curIdx}"
+      oninput="suiSetSpeedByIndex(parseInt(this.value))">
+    <div style="display:flex;justify-content:space-between;margin-top:3px">
+      ${speedLabels.map(l => `<span style="font-size:9px;color:var(--sui-text2)">${l}</span>`).join('')}
+    </div>
+  </div>
+  <div class="sui-speed-grid" style="margin-bottom:8px">`;
+  for (let i = 0; i < speedSteps.length; i++) {
+    const active = UI.simSpeed === speedSteps[i];
+    html += `<button class="sui-btn sui-speed-btn ${active ? 'sui-btn-accent' : 'sui-btn-secondary'}"
+      data-speed="${speedSteps[i]}" onclick="suiSetSpeed(${speedSteps[i]})">${speedLabels[i]}</button>`;
   }
   html += `</div>`;
 
@@ -1223,6 +1237,11 @@ window.suiLaunchSimulation = async function() {
 
   // Instalar control RAF antes de que arranque el loop
   _suiInstallSpeedControl();
+
+  // Pre-parchear guiControls_default para que setupDatGui arranque con valores del preset.
+  // Es la primera línea de defensa; el poller post-inicio es la segunda.
+  if (window.guiControls_default) Object.assign(window.guiControls_default, gcOverrides);
+  if (window.guiControls)         Object.assign(window.guiControls, gcOverrides);
 
   if (preset.saveFile) {
     const simResX   = document.getElementById('simResSelX');
@@ -1344,6 +1363,14 @@ window.suiTogglePanel = function() {
 
 // ── NUEVAS FUNCIONES ─────────────────────────────────────────────────────────
 
+const _speedSteps = [0.25, 0.5, 1, 2, 4];
+const _speedLabels = ['¼×','½×','1×','2×','4×'];
+
+window.suiSetSpeedByIndex = function(idx) {
+  const mult = _speedSteps[Math.max(0, Math.min(4, idx))];
+  suiSetSpeed(mult);
+};
+
 window.suiSetSpeed = function(mult) {
   UI.simSpeed   = mult;
   _rafSpeedMult = Math.min(mult, 1.0);   // RAF throttle para < 1×
@@ -1358,7 +1385,13 @@ window.suiSetSpeed = function(mult) {
     window.setGuiUniforms && window.setGuiUniforms();
   }
 
-  // Actualizar botones en el panel de control
+  // Sincronizar slider, etiqueta y botones
+  const idx = _speedSteps.indexOf(mult);
+  const rangeEl = document.getElementById('sui-speed-range');
+  const valEl   = document.getElementById('sui-speed-val');
+  if (rangeEl && idx !== -1) rangeEl.value = idx;
+  if (valEl   && idx !== -1) valEl.textContent = _speedLabels[idx];
+
   document.querySelectorAll('.sui-speed-btn').forEach(b => {
     const active = parseFloat(b.dataset.speed) === mult;
     b.classList.toggle('sui-btn-accent',    active);
@@ -1435,20 +1468,49 @@ function onSimulationStarted() {
   if (UI.selectedPreset && titleEl) titleEl.textContent = UI.selectedPreset.name;
   if (UI.selectedPreset && subEl)   subEl.textContent   = UI.selectedPreset.emoji + ' ' + UI.selectedPreset.difficulty;
 
-  // Poller: esperar a que guiControls esté listo y aplicar overrides + velocidad
-  let attempts = 0;
+  // Poller: aplicar overrides de preset de forma persistente durante los primeros segundos.
+  // Lo hacemos en múltiples intentos porque app.js puede reinicializar guiControls tarde
+  // (dentro de setupDatGui) y borrar nuestros valores si los aplicamos demasiado pronto.
+  let pollCount = 0;
+  let applyCount = 0;
+  const MAX_APPLIES = 8;   // aplicar como máximo 8 veces (~4 segundos)
+  const MAX_POLLS   = 60;  // rendirse tras 15 segundos
+
   const poller = setInterval(() => {
-    attempts++;
-    if (window.setGuiUniforms || attempts > 40) {
-      clearInterval(poller);
-      if (window._stormUIOverrides && window.guiControls) {
-        Object.assign(window.guiControls, window._stormUIOverrides);
-        window._stormUIOverrides = null;
-        window.setGuiUniforms && window.setGuiUniforms();
+    pollCount++;
+
+    const gc = window.guiControls;
+    const overrides = window._stormUIOverrides;
+
+    if (gc && overrides && window.setGuiUniforms) {
+      Object.assign(gc, overrides);
+      window.setGuiUniforms();
+      applyCount++;
+      if (applyCount >= MAX_APPLIES) {
+        window._stormUIOverrides = null; // ya no hacen falta
+        clearInterval(poller);
+        suiShowTab('basic');
+        if (UI.simSpeed !== 1) suiSetSpeed(UI.simSpeed);
+        return;
       }
-      // Aplicar velocidad inicial seleccionada en el launcher
-      if (UI.simSpeed !== 1) suiSetSpeed(UI.simSpeed);
+    }
+
+    // También intentar parchear guiControls_default por si aún no se ha llamado setupDatGui
+    if (window.guiControls_default && window._stormUIOverrides) {
+      Object.assign(window.guiControls_default, window._stormUIOverrides);
+    }
+
+    if (pollCount >= MAX_POLLS) {
+      clearInterval(poller);
+      window._stormUIOverrides = null;
       suiShowTab('basic');
+      if (UI.simSpeed !== 1) suiSetSpeed(UI.simSpeed);
+    }
+
+    // Primera vez que tenemos todo: mostrar la pestaña básica
+    if (applyCount === 1) {
+      suiShowTab('basic');
+      if (UI.simSpeed !== 1) suiSetSpeed(UI.simSpeed);
     }
   }, 250);
 
