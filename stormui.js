@@ -574,29 +574,24 @@ const STORM_PRESETS = [
   },
 ];
 
+// ---------------------------------------------------------------------------
+//  2.  UTILIDADES
+// ---------------------------------------------------------------------------
+
 function lerp(a, b, t) {
   return a + (b - a) * Math.clamp01(t);
 }
-
 Math.clamp01 = (v) => Math.max(0, Math.min(1, v));
 
 function applyPresetToGuiControls(preset, sliderValues) {
-  // start from the preset's base
   const gc = Object.assign({}, preset.guiBase);
-
-  // apply basic slider transformations
   for (const bm of preset.basicMap) {
     const val = sliderValues[bm.id] !== undefined ? sliderValues[bm.id] : bm.defaultVal;
     bm.apply(val, gc);
   }
-
-  // apply advanced slider values (direct mapping)
   for (const am of preset.advMap) {
-    if (sliderValues[am.id] !== undefined) {
-      gc[am.id] = sliderValues[am.id];
-    }
+    if (sliderValues[am.id] !== undefined) gc[am.id] = sliderValues[am.id];
   }
-
   return gc;
 }
 
@@ -605,24 +600,43 @@ function applyPresetToGuiControls(preset, sliderValues) {
 // ---------------------------------------------------------------------------
 
 const UI = {
-  selectedPreset: null,
-  sliderValues: {},          // { sliderId: value }
-  panelVisible: true,
-  simRunning: false,
-  activeTab: 'presets',      // 'presets' | 'basic' | 'advanced' | 'tools'
+  selectedPreset:    null,
+  sliderValues:      {},
+  panelVisible:      true,
+  simRunning:        false,
+  activeTab:         'presets',   // 'presets' | 'basic' | 'advanced' | 'tools'
+  simSpeed:          1.0,         // 0.25 | 0.5 | 1 | 2 | 4
+  _baseStepsPerFrame: null,
+  datGuiVisible:     true,
 };
 
+// ── Control de velocidad vía RAF (para velocidades < 1×) ─────────────────────
+let _rafSpeedMult = 1.0;
+const _origRAF = window.requestAnimationFrame.bind(window);
+
+function _suiInstallSpeedControl() {
+  window.requestAnimationFrame = function(callback) {
+    if (_rafSpeedMult >= 1) return _origRAF(callback);
+    const skipFrames = Math.round(1 / _rafSpeedMult) - 1;
+    if (skipFrames <= 0) return _origRAF(callback);
+    let skipped = 0;
+    const skip = (t) => {
+      if (skipped < skipFrames) { skipped++; _origRAF(skip); }
+      else callback(t);
+    };
+    return _origRAF(skip);
+  };
+}
+
 // ---------------------------------------------------------------------------
-//  4.  INYECCIÓN DE ESTILOS
+//  4.  ESTILOS
 // ---------------------------------------------------------------------------
 
 function injectStyles() {
   const style = document.createElement('style');
   style.textContent = `
-    /* ── Reset parcial ── */
     #sui-root *, #sui-panel * { box-sizing: border-box; }
 
-    /* ── Variables de color (dark theme para encajar con el fondo del simulador) ── */
     #sui-root {
       --sui-bg:        rgba(15, 15, 20, 0.92);
       --sui-bg2:       rgba(30, 30, 40, 0.85);
@@ -644,20 +658,15 @@ function injectStyles() {
 
     /* ── Panel flotante ── */
     #sui-panel {
-      position: fixed;
-      top: 0;
-      right: 0;
-      width: 340px;
-      height: 100vh;
+      position: fixed; top: 0; right: 0;
+      width: 340px; height: 100vh;
       background: var(--sui-bg);
       backdrop-filter: blur(14px);
       -webkit-backdrop-filter: blur(14px);
       border-left: 1px solid var(--sui-border);
       font-family: var(--sui-fam);
-      color: var(--sui-text);
-      font-size: 13px;
-      display: flex;
-      flex-direction: column;
+      color: var(--sui-text); font-size: 13px;
+      display: flex; flex-direction: column;
       z-index: 9999;
       transform: translateX(0);
       transition: transform var(--sui-trans);
@@ -666,352 +675,180 @@ function injectStyles() {
     #sui-panel.hidden { transform: translateX(100%); }
 
     /* ── Header ── */
-    .sui-header {
-      padding: 14px 16px 10px;
-      border-bottom: 1px solid var(--sui-border);
-      flex-shrink: 0;
-    }
-    .sui-header-top {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 10px;
-    }
-    .sui-title { font-size: 15px; font-weight: 600; color: var(--sui-text); }
+    .sui-header { padding: 14px 16px 10px; border-bottom: 1px solid var(--sui-border); flex-shrink: 0; }
+    .sui-header-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .sui-title  { font-size: 15px; font-weight: 600; color: var(--sui-text); }
     .sui-subtitle { font-size: 11px; color: var(--sui-text2); margin-top: 2px; }
     .sui-close-btn {
-      background: none;
-      border: 1px solid var(--sui-border2);
-      color: var(--sui-text2);
-      border-radius: var(--sui-radius-sm);
-      cursor: pointer;
-      padding: 4px 8px;
-      font-size: 12px;
+      background: none; border: 1px solid var(--sui-border2);
+      color: var(--sui-text2); border-radius: var(--sui-radius-sm);
+      cursor: pointer; padding: 4px 8px; font-size: 12px;
       transition: all var(--sui-trans);
     }
     .sui-close-btn:hover { background: var(--sui-bg3); color: var(--sui-text); }
 
     /* ── Tabs ── */
-    .sui-tabs {
-      display: flex;
-      gap: 4px;
-    }
+    .sui-tabs { display: flex; gap: 4px; }
     .sui-tab {
-      flex: 1;
-      padding: 6px 4px;
-      background: none;
-      border: 1px solid transparent;
+      flex: 1; padding: 6px 4px;
+      background: none; border: 1px solid transparent;
       border-radius: var(--sui-radius-sm);
-      color: var(--sui-text2);
-      cursor: pointer;
-      font-size: 11px;
-      font-family: var(--sui-fam);
-      text-align: center;
-      transition: all var(--sui-trans);
+      color: var(--sui-text2); cursor: pointer;
+      font-size: 11px; font-family: var(--sui-fam);
+      text-align: center; transition: all var(--sui-trans);
     }
     .sui-tab:hover { background: var(--sui-bg3); color: var(--sui-text); }
-    .sui-tab.active {
-      background: var(--sui-bg3);
-      border-color: var(--sui-border2);
-      color: var(--sui-text);
-      font-weight: 600;
-    }
+    .sui-tab.active { background: var(--sui-bg3); border-color: var(--sui-border2); color: var(--sui-text); font-weight: 600; }
 
-    /* ── Scroll area ── */
-    .sui-scroll {
-      flex: 1;
-      overflow-y: auto;
-      padding: 12px 14px;
-      scrollbar-width: thin;
-      scrollbar-color: var(--sui-bg3) transparent;
-    }
+    /* ── Scroll ── */
+    .sui-scroll { flex: 1; overflow-y: auto; padding: 12px 14px; scrollbar-width: thin; scrollbar-color: var(--sui-bg3) transparent; }
     .sui-scroll::-webkit-scrollbar { width: 4px; }
     .sui-scroll::-webkit-scrollbar-thumb { background: var(--sui-bg3); border-radius: 2px; }
 
     /* ── Section label ── */
     .sui-section-label {
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.07em;
-      color: var(--sui-text2);
-      margin: 14px 0 8px;
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.07em; color: var(--sui-text2); margin: 14px 0 8px;
     }
     .sui-section-label:first-child { margin-top: 0; }
 
     /* ── Preset cards ── */
-    .sui-presets-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-    }
+    .sui-presets-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .sui-preset-card {
-      background: var(--sui-bg2);
-      border: 1px solid var(--sui-border);
-      border-radius: var(--sui-radius);
-      padding: 10px 10px 8px;
-      cursor: pointer;
-      transition: all var(--sui-trans);
-      position: relative;
-      min-height: 80px;
+      background: var(--sui-bg2); border: 1px solid var(--sui-border);
+      border-radius: var(--sui-radius); padding: 10px 10px 8px;
+      cursor: pointer; transition: all var(--sui-trans);
+      position: relative; min-height: 80px;
     }
-    .sui-preset-card:hover {
-      border-color: var(--sui-border2);
-      background: var(--sui-bg3);
-    }
-    .sui-preset-card.selected {
-      border-color: var(--sui-accent);
-      background: var(--sui-bg3);
-    }
-    .sui-preset-emoji { font-size: 20px; margin-bottom: 5px; line-height: 1; }
-    .sui-preset-name { font-size: 12px; font-weight: 600; color: var(--sui-text); margin-bottom: 2px; line-height: 1.2; }
-    .sui-preset-desc { font-size: 10px; color: var(--sui-text2); line-height: 1.3; }
-    .sui-diff-badge {
-      position: absolute;
-      top: 6px;
-      right: 6px;
-      font-size: 9px;
-      padding: 2px 6px;
-      border-radius: 99px;
-      font-weight: 600;
-    }
+    .sui-preset-card:hover { border-color: var(--sui-border2); background: var(--sui-bg3); }
+    .sui-preset-card.selected { border-color: var(--sui-accent); background: var(--sui-bg3); }
+    .sui-preset-emoji  { font-size: 20px; margin-bottom: 5px; line-height: 1; }
+    .sui-preset-name   { font-size: 12px; font-weight: 600; color: var(--sui-text); margin-bottom: 2px; line-height: 1.2; }
+    .sui-preset-desc   { font-size: 10px; color: var(--sui-text2); line-height: 1.3; }
+    .sui-diff-badge    { position: absolute; top: 6px; right: 6px; font-size: 9px; padding: 2px 6px; border-radius: 99px; font-weight: 600; }
     .sui-diff-fácil    { background: rgba(67,160,71,0.25); color: #81c784; }
     .sui-diff-medio    { background: rgba(251,140,0,0.25);  color: #ffb74d; }
     .sui-diff-avanzado { background: rgba(229,57,53,0.25);  color: #ef9a9a; }
 
-    /* ── Category filter ── */
-    .sui-filter-row { display: flex; gap: 5px; margin-bottom: 10px; }
-    .sui-filter-btn {
-      padding: 4px 10px;
-      border: 1px solid var(--sui-border);
-      border-radius: 99px;
-      background: none;
-      color: var(--sui-text2);
-      cursor: pointer;
-      font-size: 11px;
-      font-family: var(--sui-fam);
-      transition: all var(--sui-trans);
-    }
-    .sui-filter-btn:hover { border-color: var(--sui-border2); color: var(--sui-text); }
+    /* ── Filtros ── */
+    .sui-filter-row  { display: flex; gap: 5px; margin-bottom: 10px; }
+    .sui-filter-btn  { padding: 4px 10px; border: 1px solid var(--sui-border); border-radius: 99px; background: none; color: var(--sui-text2); cursor: pointer; font-size: 11px; font-family: var(--sui-fam); transition: all var(--sui-trans); }
+    .sui-filter-btn:hover  { border-color: var(--sui-border2); color: var(--sui-text); }
     .sui-filter-btn.active { border-color: var(--sui-accent); color: var(--sui-accent); }
 
     /* ── Sliders ── */
     .sui-slider-row { margin-bottom: 12px; }
-    .sui-slider-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 4px;
-    }
+    .sui-slider-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
     .sui-slider-label { font-size: 12px; color: var(--sui-text); font-weight: 500; }
-    .sui-slider-val {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--sui-accent);
-      min-width: 50px;
-      text-align: right;
-    }
-    .sui-slider-hint { font-size: 10px; color: var(--sui-text2); margin-top: 3px; line-height: 1.4; }
-    input[type=range].sui-slider {
-      width: 100%;
-      height: 4px;
-      -webkit-appearance: none;
-      appearance: none;
-      background: var(--sui-bg3);
-      border-radius: 2px;
-      outline: none;
-      cursor: pointer;
-    }
-    input[type=range].sui-slider::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      width: 14px; height: 14px;
-      border-radius: 50%;
-      background: var(--sui-accent);
-      border: 2px solid #fff;
-      cursor: pointer;
-    }
-    input[type=range].sui-slider::-moz-range-thumb {
-      width: 14px; height: 14px;
-      border-radius: 50%;
-      background: var(--sui-accent);
-      border: 2px solid #fff;
-      cursor: pointer;
-    }
+    .sui-slider-val   { font-size: 12px; font-weight: 600; color: var(--sui-accent); min-width: 50px; text-align: right; }
+    .sui-slider-hint  { font-size: 10px; color: var(--sui-text2); margin-top: 3px; line-height: 1.4; }
+    input[type=range].sui-slider { width: 100%; height: 4px; -webkit-appearance: none; appearance: none; background: var(--sui-bg3); border-radius: 2px; outline: none; cursor: pointer; }
+    input[type=range].sui-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--sui-accent); border: 2px solid #fff; cursor: pointer; }
+    input[type=range].sui-slider::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--sui-accent); border: 2px solid #fff; cursor: pointer; }
 
-    /* ── Advanced toggle ── */
-    .sui-adv-toggle {
-      width: 100%;
-      background: none;
-      border: 1px solid var(--sui-border);
-      border-radius: var(--sui-radius-sm);
-      color: var(--sui-text2);
-      cursor: pointer;
-      padding: 7px 10px;
-      font-size: 11px;
-      font-family: var(--sui-fam);
-      text-align: left;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin: 8px 0;
-      transition: all var(--sui-trans);
-    }
-    .sui-adv-toggle:hover { background: var(--sui-bg3); color: var(--sui-text); }
-    .sui-adv-toggle .arrow { transition: transform 0.2s; }
-    .sui-adv-toggle.open .arrow { transform: rotate(180deg); }
+    /* ── Avanzado ── */
+    .sui-adv-warn { background: rgba(251,140,0,0.12); border: 1px solid rgba(251,140,0,0.3); border-radius: var(--sui-radius-sm); padding: 8px 10px; font-size: 10px; color: #ffb74d; margin-bottom: 10px; line-height: 1.5; }
 
-    .sui-adv-warn {
-      background: rgba(251,140,0,0.12);
-      border: 1px solid rgba(251,140,0,0.3);
-      border-radius: var(--sui-radius-sm);
-      padding: 8px 10px;
-      font-size: 10px;
-      color: #ffb74d;
-      margin-bottom: 10px;
-      line-height: 1.5;
-    }
-
-    /* ── Botones de acción ── */
+    /* ── Botones ── */
     .sui-btn {
-      width: 100%;
-      padding: 10px;
-      border: none;
-      border-radius: var(--sui-radius);
-      cursor: pointer;
-      font-size: 13px;
-      font-family: var(--sui-fam);
-      font-weight: 600;
+      width: 100%; padding: 9px 6px;
+      border: none; border-radius: var(--sui-radius);
+      cursor: pointer; font-size: 12px; font-family: var(--sui-fam); font-weight: 600;
       transition: all var(--sui-trans);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
+      display: flex; align-items: center; justify-content: center; gap: 5px;
     }
-    .sui-btn-primary {
-      background: var(--sui-accent);
-      color: #fff;
-    }
+    .sui-btn-primary   { background: var(--sui-accent); color: #fff; }
     .sui-btn-primary:hover { background: var(--sui-accent2); }
     .sui-btn-primary:disabled { background: var(--sui-bg3); color: var(--sui-text2); cursor: not-allowed; }
-    .sui-btn-secondary {
-      background: var(--sui-bg3);
-      border: 1px solid var(--sui-border2);
-      color: var(--sui-text);
-    }
+    .sui-btn-secondary { background: var(--sui-bg3); border: 1px solid var(--sui-border2); color: var(--sui-text); }
     .sui-btn-secondary:hover { background: var(--sui-bg2); }
+    .sui-btn-accent    { background: var(--sui-accent); color: #fff; border: none; }
+    .sui-btn-accent:hover { background: var(--sui-accent2); }
+    .sui-btn-warning   { background: rgba(251,140,0,0.25); border: 1px solid var(--sui-warning); color: #ffb74d; }
+    .sui-btn-warning:hover { background: rgba(251,140,0,0.4); }
+    .sui-btn-danger    { background: rgba(229,57,53,0.20); border: 1px solid var(--sui-danger); color: #ef9a9a; }
+    .sui-btn-danger:hover { background: rgba(229,57,53,0.35); }
 
-    /* ── Footer del panel ── */
-    .sui-footer {
-      padding: 10px 14px;
-      border-top: 1px solid var(--sui-border);
-      flex-shrink: 0;
-    }
+    /* ── Footer panel ── */
+    .sui-footer { padding: 10px 14px; border-top: 1px solid var(--sui-border); flex-shrink: 0; }
 
     /* ── Info banner ── */
-    .sui-info {
-      background: var(--sui-bg2);
-      border: 1px solid var(--sui-border);
-      border-radius: var(--sui-radius-sm);
-      padding: 8px 10px;
-      font-size: 11px;
-      color: var(--sui-text2);
-      line-height: 1.5;
-      margin-bottom: 10px;
-    }
+    .sui-info { background: var(--sui-bg2); border: 1px solid var(--sui-border); border-radius: var(--sui-radius-sm); padding: 8px 10px; font-size: 11px; color: var(--sui-text2); line-height: 1.5; margin-bottom: 10px; }
     .sui-info strong { color: var(--sui-text); }
 
-    /* ── Botón flotante para mostrar panel ── */
+    /* ── Botón flotante re-abrir panel ── */
     #sui-toggle-btn {
-      position: fixed;
-      top: 14px;
-      right: 14px;
-      z-index: 9998;
-      background: rgba(15,15,20,0.90);
-      border: 1px solid rgba(255,255,255,0.20);
-      border-radius: var(--sui-radius);
-      color: #f0f0f0;
-      font-family: var(--sui-fam);
-      font-size: 13px;
-      padding: 8px 14px;
-      cursor: pointer;
-      backdrop-filter: blur(10px);
-      transition: all 0.18s ease;
-      display: none;
+      position: fixed; top: 14px; right: 14px; z-index: 9998;
+      background: rgba(15,15,20,0.90); border: 1px solid rgba(255,255,255,0.20);
+      border-radius: var(--sui-radius); color: #f0f0f0;
+      font-family: var(--sui-fam); font-size: 13px; padding: 8px 14px;
+      cursor: pointer; backdrop-filter: blur(10px); transition: all 0.18s ease; display: none;
     }
     #sui-toggle-btn:hover { background: rgba(30,30,40,0.95); }
 
-    /* ── Tools ── */
-    .sui-tools-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 6px;
-      margin-bottom: 10px;
-    }
+    /* ── Herramientas ── */
+    .sui-tools-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 6px; margin-bottom: 10px; }
     .sui-tool-btn {
-      background: var(--sui-bg2);
-      border: 1px solid var(--sui-border);
-      border-radius: var(--sui-radius-sm);
-      color: var(--sui-text2);
-      cursor: pointer;
-      font-family: var(--sui-fam);
-      font-size: 10px;
-      padding: 8px 4px;
-      text-align: center;
-      transition: all var(--sui-trans);
-      line-height: 1.3;
+      background: var(--sui-bg2); border: 1px solid var(--sui-border);
+      border-radius: var(--sui-radius-sm); color: var(--sui-text2);
+      cursor: pointer; font-family: var(--sui-fam); font-size: 10px;
+      padding: 8px 4px; text-align: center; transition: all var(--sui-trans); line-height: 1.3;
     }
-    .sui-tool-btn:hover { background: var(--sui-bg3); color: var(--sui-text); border-color: var(--sui-border2); }
+    .sui-tool-btn:hover  { background: var(--sui-bg3); color: var(--sui-text); border-color: var(--sui-border2); }
     .sui-tool-btn.active { border-color: var(--sui-accent); color: var(--sui-accent); }
     .sui-tool-icon { font-size: 16px; display: block; margin-bottom: 3px; }
 
-    /* ── Intro screen reemplazado ── */
-    #sui-launcher {
-      min-height: 100vh;
-      display: flex;
-      align-items: stretch;
+    /* ── Botones de velocidad ── */
+    .sui-speed-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 4px; margin-bottom: 8px; }
+    .sui-speed-btn  { font-size: 11px !important; padding: 7px 2px !important; font-weight: 700 !important; }
+
+    /* ── Atajos de teclado ── */
+    .sui-kbd-grid { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 10px; color: var(--sui-text2); margin-bottom: 10px; align-items: center; }
+    .sui-kbd { background: var(--sui-bg3); border: 1px solid var(--sui-border2); border-radius: 4px; padding: 1px 5px; font-family: monospace; font-size: 10px; color: var(--sui-text); white-space: nowrap; }
+
+    /* ── Launcher ── */
+    #sui-launcher { min-height: 100vh; display: flex; align-items: stretch; }
+    .sui-launcher-left { flex: 1; padding: 40px; background: rgba(0,0,0,0.55); backdrop-filter: blur(6px); color: #fff; display: flex; flex-direction: column; justify-content: center; }
+    .sui-launcher-left h1 { font-size: 2.2rem; font-weight: 700; margin: 0 0 8px; line-height: 1.1; }
+    .sui-launcher-left p  { color: rgba(255,255,255,0.7); font-size: 1rem; margin: 0 0 32px; }
+
+    /* ── Selector de velocidad en el launcher ── */
+    .sui-launch-speed-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 6px; margin-bottom: 18px; }
+    .sui-launch-speed-btn  {
+      padding: 8px 4px; border-radius: var(--sui-radius-sm);
+      border: 1px solid var(--sui-border2); background: rgba(255,255,255,0.07);
+      color: rgba(255,255,255,0.7); font-family: var(--sui-fam);
+      font-size: 13px; font-weight: 700; cursor: pointer; text-align: center;
+      transition: all 0.15s ease;
     }
-    .sui-launcher-left {
-      flex: 1;
-      padding: 40px;
-      background: rgba(0,0,0,0.55);
-      backdrop-filter: blur(6px);
-      color: #fff;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-    }
-    .sui-launcher-left h1 {
-      font-size: 2.2rem;
-      font-weight: 700;
-      margin: 0 0 8px;
-      line-height: 1.1;
-    }
-    .sui-launcher-left p { color: rgba(255,255,255,0.7); font-size: 1rem; margin: 0 0 32px; }
+    .sui-launch-speed-btn:hover  { background: rgba(255,255,255,0.15); color: #fff; }
+    .sui-launch-speed-btn.active { background: var(--sui-accent); border-color: var(--sui-accent); color: #fff; }
 
     /* ── Paused overlay ── */
     #sui-paused-overlay {
-      display: none;
-      position: fixed;
-      top: 10px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 9997;
-      background: rgba(229,57,53,0.85);
-      color: #fff;
-      padding: 6px 18px;
-      border-radius: 99px;
-      font-family: var(--sui-fam);
-      font-size: 13px;
-      font-weight: 600;
-      backdrop-filter: blur(6px);
-      pointer-events: none;
+      display: none; position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+      z-index: 9997; background: rgba(229,57,53,0.85); color: #fff;
+      padding: 6px 18px; border-radius: 99px;
+      font-family: var(--sui-fam); font-size: 13px; font-weight: 600;
+      backdrop-filter: blur(6px); pointer-events: none;
+    }
+
+    /* ── Speed HUD ── */
+    #sui-speed-hud {
+      display: none; position: fixed; top: 10px; left: 10px;
+      z-index: 9996; background: rgba(15,15,20,0.80);
+      border: 1px solid rgba(255,255,255,0.15);
+      color: #f0f0f0; padding: 4px 12px; border-radius: 99px;
+      font-family: var(--sui-fam); font-size: 12px; font-weight: 600;
+      backdrop-filter: blur(6px); pointer-events: none;
+      transition: opacity 0.3s ease;
     }
   `;
   document.head.appendChild(style);
 }
 
 // ---------------------------------------------------------------------------
-//  5.  PANTALLA DE LANZAMIENTO (reemplaza IntroScreen)
+//  5.  PANTALLA DE LANZAMIENTO
 // ---------------------------------------------------------------------------
 
 function buildLauncherHTML() {
@@ -1019,7 +856,7 @@ function buildLauncherHTML() {
 <div id="sui-root" id="sui-launcher">
 <div class="sui-launcher-left">
   <h1>Simulador<br>de tiempo</h1>
-  <p>Elige un escenario y lanza la simulación.</p>
+  <p>Elige un escenario, ajusta la velocidad y lanza la simulación.</p>
 
   <div style="margin-bottom:14px">
     <div class="sui-section-label">Categoría</div>
@@ -1056,6 +893,15 @@ function buildLauncherHTML() {
       </div>
     </div>
 
+    <div class="sui-section-label">Velocidad inicial <span style="font-size:10px;opacity:0.6">(se puede cambiar después)</span></div>
+    <div class="sui-launch-speed-grid" id="sui-launch-speed-grid">
+      <button class="sui-launch-speed-btn" data-speed="0.25" onclick="suiSetLaunchSpeed(0.25,this)">¼×</button>
+      <button class="sui-launch-speed-btn" data-speed="0.5"  onclick="suiSetLaunchSpeed(0.5,this)">½×</button>
+      <button class="sui-launch-speed-btn active" data-speed="1" onclick="suiSetLaunchSpeed(1,this)">1×</button>
+      <button class="sui-launch-speed-btn" data-speed="2"  onclick="suiSetLaunchSpeed(2,this)">2×</button>
+      <button class="sui-launch-speed-btn" data-speed="4"  onclick="suiSetLaunchSpeed(4,this)">4×</button>
+    </div>
+
     <button class="sui-btn sui-btn-primary" id="sui-launch-btn"
       onclick="suiLaunchSimulation()"
       style="max-width:320px;font-size:15px;padding:13px"
@@ -1071,7 +917,7 @@ function buildLauncherHTML() {
 }
 
 // ---------------------------------------------------------------------------
-//  6.  PANEL DE CONTROL (visible sobre el canvas durante la simulación)
+//  6.  PANEL DE CONTROL
 // ---------------------------------------------------------------------------
 
 function buildControlPanel() {
@@ -1082,9 +928,9 @@ function buildControlPanel() {
       <div class="sui-header-top">
         <div>
           <div class="sui-title" id="sui-panel-title">Simulador de tiempo</div>
-          <div class="sui-subtitle" id="sui-panel-sub">Selecciona un preset arriba</div>
+          <div class="sui-subtitle" id="sui-panel-sub">Cargando…</div>
         </div>
-        <button class="sui-close-btn" onclick="suiTogglePanel()">Ocultar</button>
+        <button class="sui-close-btn" onclick="suiTogglePanel()">Ocultar ✕</button>
       </div>
       <div class="sui-tabs">
         <button class="sui-tab active" onclick="suiShowTab('basic')">Básico</button>
@@ -1099,7 +945,7 @@ function buildControlPanel() {
 }
 
 // ---------------------------------------------------------------------------
-//  7.  RENDERIZADO DE CONTENIDO DEL PANEL
+//  7.  RENDERIZADO DEL PANEL
 // ---------------------------------------------------------------------------
 
 function suiShowTab(tab) {
@@ -1119,7 +965,7 @@ function suiRenderPanelBody() {
 
   if (UI.activeTab === 'basic') {
     if (!preset) {
-      body.innerHTML = `<div class="sui-info">No hay ningún preset activo. La simulación está usando los valores por defecto.</div>`;
+      body.innerHTML = `<div class="sui-info">No hay preset activo. La simulación usa valores por defecto.</div>`;
       footer.innerHTML = '';
       return;
     }
@@ -1134,14 +980,12 @@ function suiRenderPanelBody() {
 
   } else if (UI.activeTab === 'advanced') {
     if (!preset) {
-      body.innerHTML = `<div class="sui-info">Selecciona un preset primero para ver los parámetros avanzados.</div>`;
+      body.innerHTML = `<div class="sui-info">Selecciona un preset para ver los parámetros avanzados.</div>`;
       footer.innerHTML = '';
       return;
     }
-    let html = `<div class="sui-adv-warn">
-      ⚠ Parámetros del motor de simulación. Valores fuera de rango pueden producir resultados inesperados.
-    </div>`;
-    html += `<div class="sui-section-label">Parámetros avanzados — ${preset.name}</div>`;
+    let html = `<div class="sui-adv-warn">⚠ Parámetros del motor. Valores extremos pueden producir resultados inesperados.</div>`;
+    html += `<div class="sui-section-label">Parámetros — ${preset.name}</div>`;
     for (const am of preset.advMap) {
       const gc = window.guiControls || {};
       const current = UI.sliderValues[am.id] !== undefined
@@ -1160,27 +1004,25 @@ function suiRenderPanelBody() {
     footer.innerHTML = '';
   }
 
-  // Wire up sliders
+  // Wire sliders
   body.querySelectorAll('input[type=range][data-sid]').forEach(input => {
     input.addEventListener('input', () => {
       const sid = input.dataset.sid;
-      const val = parseFloat(input.value);
-      UI.sliderValues[sid] = val;
+      UI.sliderValues[sid] = parseFloat(input.value);
       const disp = document.getElementById('sui-val-' + sid);
-      if (disp) disp.textContent = formatSliderVal(val, input.dataset.decimals || 0);
+      if (disp) disp.textContent = formatSliderVal(parseFloat(input.value), input.dataset.decimals || 0);
     });
   });
 }
 
 function renderSimpleSlider(bm, val) {
-  const decimals = 0;
   return `
   <div class="sui-slider-row">
     <div class="sui-slider-header">
       <span class="sui-slider-label">${bm.label}</span>
-      <span class="sui-slider-val" id="sui-val-${bm.id}">${formatSliderVal(val, decimals)}</span>
+      <span class="sui-slider-val" id="sui-val-${bm.id}">${Math.round(val)}</span>
     </div>
-    <input type="range" class="sui-slider" data-sid="${bm.id}" data-decimals="${decimals}"
+    <input type="range" class="sui-slider" data-sid="${bm.id}" data-decimals="0"
       min="${bm.min}" max="${bm.max}" step="1" value="${val}">
     <div class="sui-slider-hint">${bm.hint}</div>
   </div>`;
@@ -1203,29 +1045,28 @@ function renderAdvSlider(am, val) {
 
 function renderToolsTab() {
   const tools = [
-    { key: 'TOOL_HEAT',     label: 'Calentar',      icon: '🌡' },
-    { key: 'TOOL_MOISTURE', label: 'Humedad',        icon: '💧' },
-    { key: 'TOOL_WIND',     label: 'Viento',         icon: '🌬' },
-    { key: 'TOOL_FIRE',     label: 'Fuego',          icon: '🔥' },
-    { key: 'TOOL_SMOKE',    label: 'Humo',           icon: '💨' },
-    { key: 'TOOL_RAIN',     label: 'Lluvia forzada', icon: '🌧' },
-    { key: 'TOOL_STATION',  label: 'Estación',       icon: '📡' },
-    { key: 'TOOL_NONE',     label: 'Sin herramienta',icon: '🖱' },
+    { key: 'TOOL_HEAT',     label: 'Calentar',       icon: '🌡' },
+    { key: 'TOOL_MOISTURE', label: 'Humedad',         icon: '💧' },
+    { key: 'TOOL_WIND',     label: 'Viento',          icon: '🌬' },
+    { key: 'TOOL_FIRE',     label: 'Fuego',           icon: '🔥' },
+    { key: 'TOOL_SMOKE',    label: 'Humo',            icon: '💨' },
+    { key: 'TOOL_RAIN',     label: 'Lluvia forzada',  icon: '🌧' },
+    { key: 'TOOL_STATION',  label: 'Estación',        icon: '📡' },
+    { key: 'TOOL_NONE',     label: 'Sin herramienta', icon: '🖱' },
   ];
   const gc = window.guiControls || {};
 
-  let toolsHtml = '<div class="sui-section-label">Herramienta activa</div>';
-  toolsHtml += '<div class="sui-tools-grid">';
+  // ── Herramientas ──
+  let html = '<div class="sui-section-label">Herramienta activa</div><div class="sui-tools-grid">';
   for (const t of tools) {
-    const active = gc.tool === t.key ? 'active' : '';
-    toolsHtml += `<button class="sui-tool-btn ${active}" onclick="suiSetTool('${t.key}')">
-      <span class="sui-tool-icon">${t.icon}</span>${t.label}
-    </button>`;
+    html += `<button class="sui-tool-btn ${gc.tool === t.key ? 'active' : ''}" onclick="suiSetTool('${t.key}')">
+      <span class="sui-tool-icon">${t.icon}</span>${t.label}</button>`;
   }
-  toolsHtml += '</div>';
+  html += '</div>';
 
-  toolsHtml += `
-  <div class="sui-section-label">Pincel</div>
+  // ── Pincel ──
+  html += `
+  <div class="sui-section-label">Pincel <span style="font-size:9px;color:var(--sui-text2)">( [ / ] )</span></div>
   <div class="sui-slider-row">
     <div class="sui-slider-header">
       <span class="sui-slider-label">Tamaño</span>
@@ -1237,28 +1078,75 @@ function renderToolsTab() {
   <div class="sui-slider-row">
     <div class="sui-slider-header">
       <span class="sui-slider-label">Intensidad</span>
-      <span class="sui-slider-val" id="sui-brush-int-val">${((gc.brushIntensity || 0.01) * 100).toFixed(0)}%</span>
+      <span class="sui-slider-val" id="sui-brush-int-val">${((gc.brushIntensity || 0.01)*100).toFixed(0)}%</span>
     </div>
     <input type="range" class="sui-slider" min="5" max="50" step="1" value="${Math.round((gc.brushIntensity||0.01)*1000)}"
       oninput="suiSetBrushIntensity(this.value)">
-  </div>
+  </div>`;
 
-  <div class="sui-section-label">Reproducción</div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
-    <button class="sui-btn sui-btn-secondary" onclick="suiTogglePause()">⏯ Pausa</button>
+  // ── Reproducción ──
+  const paused = !!gc.paused;
+  html += `
+  <div class="sui-section-label">Reproducción <span style="font-size:9px;color:var(--sui-text2)">( Espacio )</span></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">
+    <button class="sui-btn ${paused ? 'sui-btn-warning' : 'sui-btn-secondary'}" onclick="suiTogglePause()">
+      ${paused ? '▶ Reanudar' : '⏸ Pausar'}
+    </button>
     <button class="sui-btn sui-btn-secondary" onclick="suiSaveSimulation()">💾 Guardar</button>
-  </div>
+  </div>`;
 
+  // ── Velocidad ──
+  const speeds = [{mult:0.25,label:'¼×'},{mult:0.5,label:'½×'},{mult:1,label:'1×'},{mult:2,label:'2×'},{mult:4,label:'4×'}];
+  html += `
+  <div class="sui-section-label">Velocidad <span style="font-size:9px;color:var(--sui-text2)">( teclas 1 – 5 )</span></div>
+  <div class="sui-speed-grid">`;
+  for (const s of speeds) {
+    const active = UI.simSpeed === s.mult;
+    html += `<button class="sui-btn sui-speed-btn ${active ? 'sui-btn-accent' : 'sui-btn-secondary'}" data-speed="${s.mult}"
+      onclick="suiSetSpeed(${s.mult})">${s.label}</button>`;
+  }
+  html += `</div>`;
+
+  // ── Visualización ──
+  html += `
   <div class="sui-section-label">Visualización</div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">
     <button class="sui-btn sui-btn-secondary" onclick="suiSetDisplayMode('DISP_REAL')">Real</button>
     <button class="sui-btn sui-btn-secondary" onclick="suiSetDisplayMode('DISP_TEMP')">Temperatura</button>
     <button class="sui-btn sui-btn-secondary" onclick="suiSetDisplayMode('DISP_HUMIDITY')">Humedad rel.</button>
     <button class="sui-btn sui-btn-secondary" onclick="suiSetDisplayMode('DISP_WIND')">Viento</button>
-  </div>
-  `;
+  </div>`;
 
-  return toolsHtml;
+  // ── Panel original dat.GUI ──
+  html += `
+  <div class="sui-section-label">Panel original (dat.GUI) <span style="font-size:9px;color:var(--sui-text2)">( D )</span></div>
+  <div style="margin-bottom:8px">
+    <button class="sui-btn sui-btn-secondary" id="sui-datgui-btn" onclick="suiToggleDatGui()">
+      ${UI.datGuiVisible ? '👁 Ocultar panel original' : '👁 Mostrar panel original'}
+    </button>
+  </div>`;
+
+  // ── Sesión ──
+  html += `
+  <div class="sui-section-label">Sesión</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:4px">
+    <button class="sui-btn sui-btn-danger" onclick="suiReset()">↺ Restablecer</button>
+    <button class="sui-btn sui-btn-secondary" onclick="suiTogglePanel()">✕ Ocultar panel</button>
+  </div>`;
+
+  // ── Atajos de teclado ──
+  html += `
+  <div class="sui-section-label" style="margin-top:16px">Atajos de teclado</div>
+  <div class="sui-kbd-grid">
+    <span class="sui-kbd">H</span><span>Ocultar / mostrar Storm UI</span>
+    <span class="sui-kbd">D</span><span>Ocultar / mostrar dat.GUI</span>
+    <span class="sui-kbd">Espacio</span><span>Pausar / reanudar</span>
+    <span class="sui-kbd">1 – 5</span><span>Velocidad ¼× ½× 1× 2× 4×</span>
+    <span class="sui-kbd">[ ]</span><span>Tamaño de pincel −5 / +5</span>
+    <span class="sui-kbd">+ −</span><span>Subir / bajar velocidad</span>
+  </div>`;
+
+  return html;
 }
 
 function formatSliderVal(val, decimals) {
@@ -1284,32 +1172,33 @@ function renderLauncherGrid() {
   const list = _currentLauncherFilter === 'all'
     ? STORM_PRESETS
     : STORM_PRESETS.filter(p => p.category === _currentLauncherFilter);
-
   grid.innerHTML = list.map(p => `
     <div class="sui-preset-card ${UI.selectedPreset?.id === p.id ? 'selected' : ''}"
       onclick="suiSelectPreset('${p.id}')">
       <span class="sui-diff-badge sui-diff-${p.difficulty}">${p.difficulty}</span>
       <div class="sui-preset-emoji">${p.emoji}</div>
       <div class="sui-preset-name">${p.name}</div>
-      <div class="sui-preset-desc">${p.desc.slice(0, 60)}…</div>
+      <div class="sui-preset-desc">${p.desc.slice(0,60)}…</div>
     </div>`).join('');
 }
 
+window.suiSetLaunchSpeed = function(mult, btn) {
+  UI.simSpeed = mult;
+  _rafSpeedMult = Math.min(mult, 1.0);
+  document.querySelectorAll('.sui-launch-speed-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+};
+
 window.suiSelectPreset = function(id) {
   UI.selectedPreset = STORM_PRESETS.find(p => p.id === id);
-  // Init slider values from defaults
   UI.sliderValues = {};
   if (UI.selectedPreset) {
-    for (const bm of UI.selectedPreset.basicMap) {
-      UI.sliderValues[bm.id] = bm.defaultVal;
-    }
-    // Set resolution sliders
+    for (const bm of UI.selectedPreset.basicMap) UI.sliderValues[bm.id] = bm.defaultVal;
     const resX = document.getElementById('launcher-resX');
     const resY = document.getElementById('launcher-resY');
     if (resX) { resX.value = UI.selectedPreset.resX; document.getElementById('launcher-resX-val').textContent = UI.selectedPreset.resX; }
     if (resY) { resY.value = UI.selectedPreset.resY; document.getElementById('launcher-resY-val').textContent = UI.selectedPreset.resY; }
   }
-
   const btn = document.getElementById('sui-launch-btn');
   if (btn) {
     btn.disabled = !UI.selectedPreset;
@@ -1322,23 +1211,20 @@ window.suiLaunchSimulation = async function() {
   if (!UI.selectedPreset) return;
   const preset = UI.selectedPreset;
 
-  // Build the guiControls overrides from current slider values
   const gcOverrides = applyPresetToGuiControls(preset, UI.sliderValues);
   window._stormUIOverrides = gcOverrides;
 
-  // Read resolution values from the launcher's own inputs
   const resX   = document.getElementById('launcher-resX');
   const resY   = document.getElementById('launcher-resY');
   const height = document.getElementById('launcher-height');
-
   const resXval   = parseInt(resX?.value   ?? 200);
   const resYval   = parseInt(resY?.value   ?? 300);
   const heightVal = parseInt(height?.value ?? 12000);
 
+  // Instalar control RAF antes de que arranque el loop
+  _suiInstallSpeedControl();
+
   if (preset.saveFile) {
-    // For save-file presets, also try to update the original elements if they still
-    // exist in the DOM (loadData()'s file-loading branch doesn't use them, but keep
-    // for safety).
     const simResX   = document.getElementById('simResSelX');
     const simResY   = document.getElementById('simResSelY');
     const simHeight = document.getElementById('simHeightSel');
@@ -1347,69 +1233,50 @@ window.suiLaunchSimulation = async function() {
     if (simHeight) simHeight.value = heightVal;
     await suiLoadSaveFile(preset.saveFile);
   } else {
-    // ── NUEVA SIMULACIÓN ────────────────────────────────────────────────────
-    // NO llamamos a loadData() porque esa función intenta leer los elementos
-    // simResSelX / simResSelY / simHeightSel del DOM original, que stormui ya
-    // eliminó al reemplazar el innerHTML de IntroScreen.
-    // En su lugar reproducimos exactamente lo que haría la rama sin-archivo de
-    // loadData(), asignando las variables globales directamente.
-    window.sim_res_x = resXval;
-    window.sim_res_y = resYval;
-    window.sim_height = heightVal;
-    window.NUM_DROPLETS = (resXval * resYval) / 25; // NUM_DROPLETS_DEVIDER = 25
-    window.SETUP_MODE = true;
-    mainScript(null); // lanza la simulación sin texturas iniciales
+    window.sim_res_x    = resXval;
+    window.sim_res_y    = resYval;
+    window.sim_height   = heightVal;
+    window.NUM_DROPLETS = (resXval * resYval) / 25;
+    window.SETUP_MODE   = true;
+    mainScript(null);
   }
 };
 
 async function suiLoadSaveFile(url) {
   const btn = document.getElementById('sui-launch-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Cargando...'; }
-
+  if (btn) { btn.disabled = true; btn.textContent = 'Cargando…'; }
   try {
     const response = await fetch(url);
-    if (!response.ok) throw new Error('No se pudo cargar el archivo: ' + url);
+    if (!response.ok) throw new Error('HTTP ' + response.status);
     const blob = await response.blob();
-    const filename = url.split('/').pop();
-    const file = new File([blob], filename);
-
-    // Inject file into fileInput using DataTransfer
+    const file = new File([blob], url.split('/').pop());
     const dt = new DataTransfer();
     dt.items.add(file);
-    const fileInput = document.getElementById('fileInput');
-    fileInput.files = dt.files;
-
-    // loadData() con archivo: lee la resolución del propio archivo, no del DOM.
+    document.getElementById('fileInput').files = dt.files;
     loadData();
   } catch (err) {
     console.error('stormui: error cargando save file', err);
-    // Fallback: nueva simulación con los valores del launcher.
-    // NO llamamos a loadData() sin archivo porque leeería elementos del DOM
-    // originales (simResSelX, etc.) que stormui eliminó.
     if (btn) { btn.disabled = false; btn.textContent = '▶  Lanzar sin archivo guardado'; }
     const resX   = document.getElementById('launcher-resX');
     const resY   = document.getElementById('launcher-resY');
     const height = document.getElementById('launcher-height');
-    window.sim_res_x  = parseInt(resX?.value   ?? 200);
-    window.sim_res_y  = parseInt(resY?.value   ?? 300);
-    window.sim_height = parseInt(height?.value ?? 12000);
+    window.sim_res_x    = parseInt(resX?.value   ?? 200);
+    window.sim_res_y    = parseInt(resY?.value   ?? 300);
+    window.sim_height   = parseInt(height?.value ?? 12000);
     window.NUM_DROPLETS = (window.sim_res_x * window.sim_res_y) / 25;
-    window.SETUP_MODE = true;
+    window.SETUP_MODE   = true;
     mainScript(null);
   }
 }
 
 // ---------------------------------------------------------------------------
-//  9.  ACCIONES DEL PANEL DE CONTROL (durante la simulación)
+//  9.  ACCIONES DEL PANEL
 // ---------------------------------------------------------------------------
 
 window.suiApplyCurrentSettings = function() {
   if (!UI.selectedPreset || !window.guiControls) return;
-  const newVals = applyPresetToGuiControls(UI.selectedPreset, UI.sliderValues);
-  Object.assign(window.guiControls, newVals);
+  Object.assign(window.guiControls, applyPresetToGuiControls(UI.selectedPreset, UI.sliderValues));
   window.setGuiUniforms && window.setGuiUniforms();
-
-  // Flash feedback
   const btn = document.querySelector('#sui-panel-footer .sui-btn-primary');
   if (btn) {
     const orig = btn.textContent;
@@ -1421,7 +1288,6 @@ window.suiApplyCurrentSettings = function() {
 
 window.suiResetToPresetBase = function() {
   if (!UI.selectedPreset || !window.guiControls) return;
-  // Reset slider values to defaults
   for (const bm of UI.selectedPreset.basicMap) UI.sliderValues[bm.id] = bm.defaultVal;
   for (const am of UI.selectedPreset.advMap)   delete UI.sliderValues[am.id];
   Object.assign(window.guiControls, UI.selectedPreset.guiBase);
@@ -1435,17 +1301,17 @@ window.suiTogglePause = function() {
   window.handlePause && window.handlePause();
   const overlay = document.getElementById('sui-paused-overlay');
   if (overlay) overlay.style.display = window.guiControls.paused ? 'block' : 'none';
+  // Re-render tools tab para actualizar el botón
+  if (UI.activeTab === 'tools') suiRenderPanelBody();
 };
 
 window.suiSaveSimulation = function() {
-  if (!window.guiControls) return;
-  window.guiControls.download && window.guiControls.download();
+  window.guiControls?.download && window.guiControls.download();
 };
 
 window.suiSetTool = function(toolKey) {
   if (!window.guiControls) return;
   window.guiControls.tool = toolKey;
-  // Re-render tools tab to update active state
   suiShowTab('tools');
 };
 
@@ -1469,15 +1335,64 @@ window.suiSetDisplayMode = function(mode) {
 };
 
 window.suiTogglePanel = function() {
-  const panel = document.getElementById('sui-panel');
+  const panel     = document.getElementById('sui-panel');
   const toggleBtn = document.getElementById('sui-toggle-btn');
   UI.panelVisible = !UI.panelVisible;
-  if (panel) panel.classList.toggle('hidden', !UI.panelVisible);
+  if (panel)     panel.classList.toggle('hidden', !UI.panelVisible);
   if (toggleBtn) toggleBtn.style.display = UI.panelVisible ? 'none' : 'block';
 };
 
+// ── NUEVAS FUNCIONES ─────────────────────────────────────────────────────────
+
+window.suiSetSpeed = function(mult) {
+  UI.simSpeed   = mult;
+  _rafSpeedMult = Math.min(mult, 1.0);   // RAF throttle para < 1×
+
+  // Para velocidades > 1× intentamos stepsPerFrame
+  if (window.guiControls && 'stepsPerFrame' in window.guiControls) {
+    if (UI._baseStepsPerFrame === null)
+      UI._baseStepsPerFrame = window.guiControls.stepsPerFrame;
+    window.guiControls.stepsPerFrame = mult >= 1
+      ? Math.max(1, Math.round(UI._baseStepsPerFrame * mult))
+      : UI._baseStepsPerFrame;
+    window.setGuiUniforms && window.setGuiUniforms();
+  }
+
+  // Actualizar botones en el panel de control
+  document.querySelectorAll('.sui-speed-btn').forEach(b => {
+    const active = parseFloat(b.dataset.speed) === mult;
+    b.classList.toggle('sui-btn-accent',    active);
+    b.classList.toggle('sui-btn-secondary', !active);
+  });
+
+  // HUD flotante
+  const hud = document.getElementById('sui-speed-hud');
+  if (hud) {
+    const labels = {0.25:'¼×', 0.5:'½×', 1:'1×', 2:'2×', 4:'4×'};
+    hud.textContent = '⏩ ' + (labels[mult] || mult + '×');
+    hud.style.display = 'block';
+    clearTimeout(hud._hideTimer);
+    hud._hideTimer = setTimeout(() => { hud.style.display = 'none'; }, 1500);
+  }
+};
+
+window.suiToggleDatGui = function() {
+  const dg = document.querySelector('.dg.ac');
+  if (!dg) { console.warn('stormui: panel dat.GUI no encontrado'); return; }
+  UI.datGuiVisible = !UI.datGuiVisible;
+  dg.style.display = UI.datGuiVisible ? '' : 'none';
+  const btn = document.getElementById('sui-datgui-btn');
+  if (btn) btn.textContent = UI.datGuiVisible ? '👁 Ocultar panel original' : '👁 Mostrar panel original';
+};
+
+window.suiReset = function() {
+  if (UI.selectedPreset)
+    sessionStorage.setItem('sui_restore_preset', UI.selectedPreset.id);
+  location.reload();
+};
+
 // ---------------------------------------------------------------------------
-//  10.  OBSERVADOR: detectar cuándo la simulación ha arrancado
+//  10.  OBSERVADOR DE INICIO DE SIMULACIÓN
 // ---------------------------------------------------------------------------
 
 function watchForSimulationStart() {
@@ -1494,52 +1409,105 @@ function watchForSimulationStart() {
 function onSimulationStarted() {
   UI.simRunning = true;
 
-  // Build control panel
   buildControlPanel();
 
-  // Add the hidden toggle button
+  // Botón flotante re-abrir
   const toggleBtn = document.createElement('button');
   toggleBtn.id = 'sui-toggle-btn';
   toggleBtn.textContent = '⚙ Panel';
   toggleBtn.onclick = suiTogglePanel;
   document.body.appendChild(toggleBtn);
 
-  // Paused overlay
+  // Overlay pausa
   const pausedOverlay = document.createElement('div');
   pausedOverlay.id = 'sui-paused-overlay';
-  pausedOverlay.textContent = '⏸ PAUSADO — Pulsa Espacio o el botón en Herramientas';
+  pausedOverlay.textContent = '⏸ PAUSADO';
   document.body.appendChild(pausedOverlay);
 
-  // Update panel header
+  // HUD velocidad
+  const speedHud = document.createElement('div');
+  speedHud.id = 'sui-speed-hud';
+  document.body.appendChild(speedHud);
+
+  // Header del panel
   const titleEl = document.getElementById('sui-panel-title');
   const subEl   = document.getElementById('sui-panel-sub');
   if (UI.selectedPreset && titleEl) titleEl.textContent = UI.selectedPreset.name;
   if (UI.selectedPreset && subEl)   subEl.textContent   = UI.selectedPreset.emoji + ' ' + UI.selectedPreset.difficulty;
 
-  // Sync guiControls reference (may have been re-created inside mainScript)
-  // Poll briefly to make sure window.guiControls is live
+  // Poller: esperar a que guiControls esté listo y aplicar overrides + velocidad
   let attempts = 0;
   const poller = setInterval(() => {
     attempts++;
     if (window.setGuiUniforms || attempts > 40) {
       clearInterval(poller);
-      // Apply any outstanding overrides
       if (window._stormUIOverrides && window.guiControls) {
         Object.assign(window.guiControls, window._stormUIOverrides);
         window._stormUIOverrides = null;
         window.setGuiUniforms && window.setGuiUniforms();
       }
+      // Aplicar velocidad inicial seleccionada en el launcher
+      if (UI.simSpeed !== 1) suiSetSpeed(UI.simSpeed);
       suiShowTab('basic');
     }
   }, 250);
 
-  // H key now also toggles our panel
+  // ── Atajos de teclado ────────────────────────────────────────────────────
+  const SPEED_STEPS = [0.25, 0.5, 1, 2, 4];
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'h' || e.key === 'H') {
-      // DatGui handles its own H toggle internally; we mirror it
-      suiTogglePanel();
+    // No actuar si el foco está en un campo de texto
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+    switch (e.key) {
+      // Panel Storm UI
+      case 'h': case 'H':
+        suiTogglePanel();
+        break;
+
+      // Panel dat.GUI
+      case 'd': case 'D':
+        suiToggleDatGui();
+        break;
+
+      // Pausa (Espacio — app.js también lo gestiona, usamos capture:false para no interferir)
+      case ' ':
+        suiTogglePause();
+        break;
+
+      // Velocidades directas 1-5
+      case '1': suiSetSpeed(0.25); break;
+      case '2': suiSetSpeed(0.5);  break;
+      case '3': suiSetSpeed(1);    break;
+      case '4': suiSetSpeed(2);    break;
+      case '5': suiSetSpeed(4);    break;
+
+      // Subir / bajar velocidad un paso
+      case '+': case '=': {
+        const idx = SPEED_STEPS.indexOf(UI.simSpeed);
+        if (idx < SPEED_STEPS.length - 1) suiSetSpeed(SPEED_STEPS[idx + 1]);
+        break;
+      }
+      case '-': case '_': {
+        const idx = SPEED_STEPS.indexOf(UI.simSpeed);
+        if (idx > 0) suiSetSpeed(SPEED_STEPS[idx - 1]);
+        break;
+      }
+
+      // Tamaño de pincel
+      case '[': {
+        if (!window.guiControls) break;
+        window.guiControls.brushSize = Math.max(1, (window.guiControls.brushSize || 20) - 5);
+        if (UI.activeTab === 'tools') suiRenderPanelBody();
+        break;
+      }
+      case ']': {
+        if (!window.guiControls) break;
+        window.guiControls.brushSize = Math.min(200, (window.guiControls.brushSize || 20) + 5);
+        if (UI.activeTab === 'tools') suiRenderPanelBody();
+        break;
+      }
     }
-  }, true);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1549,21 +1517,25 @@ function onSimulationStarted() {
 function suiInit() {
   injectStyles();
 
-  // Replace IntroScreen content with launcher
   const introScreen = document.getElementById('IntroScreen');
   if (introScreen) {
     introScreen.innerHTML = buildLauncherHTML();
-    // re-assign id to sui-root for var scoping
     const root = introScreen.querySelector('#sui-root');
     if (root) root.id = 'sui-root';
     else introScreen.id = 'sui-root';
     renderLauncherGrid();
+
+    // Restaurar preset tras un Restablecer
+    const restoreId = sessionStorage.getItem('sui_restore_preset');
+    if (restoreId) {
+      sessionStorage.removeItem('sui_restore_preset');
+      suiSelectPreset(restoreId);
+    }
   }
 
   watchForSimulationStart();
 }
 
-// Run when DOM is ready
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', suiInit);
 } else {
